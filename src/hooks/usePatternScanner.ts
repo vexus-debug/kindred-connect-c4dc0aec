@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { supabase } from '@/integrations/supabase/client';
 import { fetchTickers, fetchKlines } from '@/lib/bybit-api';
 import { detectCandlestickPatterns, type CandlestickPattern } from '@/lib/candlestick-patterns';
 import { detectChartPatterns, type ChartPattern } from '@/lib/chart-patterns';
@@ -9,7 +10,7 @@ import { TIMEFRAME_LABELS } from '@/types/scanner';
 const SCAN_TIMEFRAMES: Timeframe[] = ['5', '15', '60', '240', 'D', 'W'];
 const TOP_SYMBOLS = 50;
 const MAX_PER_TIMEFRAME = 10;
-const SCAN_INTERVAL_MS = 5 * 60 * 1000;
+const DB_POLL_INTERVAL = 30_000;
 
 export interface DetectedPattern {
   id: string;
@@ -20,7 +21,7 @@ export interface DetectedPattern {
   detectedAt: number;
   formedAt: number;
   category: 'candlestick' | 'chart' | 'structure';
-  trendAligned?: boolean; // true if pattern direction matches current trend
+  trendAligned?: boolean;
 }
 
 export interface PatternGroup {
@@ -29,11 +30,6 @@ export interface PatternGroup {
   patterns: DetectedPattern[];
 }
 
-/**
- * Boost significance when pattern aligns with the current trend on that timeframe.
- * Aligned patterns get promoted: low→medium, medium→high.
- * Counter-trend patterns get demoted: high→medium, medium→low.
- */
 function adjustSignificance(
   baseSig: 'high' | 'medium' | 'low',
   patternType: string,
@@ -41,30 +37,17 @@ function adjustSignificance(
   tf: Timeframe,
   trendAssets: AssetTrend[]
 ): { significance: 'high' | 'medium' | 'low'; aligned: boolean } {
-  // Find trend data for this symbol
   const fullSymbol = symbol.includes('USDT') ? symbol : `${symbol}USDT`;
   const asset = trendAssets.find(a => a.symbol === fullSymbol);
   if (!asset) return { significance: baseSig, aligned: false };
-
   const signal = asset.signals[tf];
   if (!signal || !signal.direction) return { significance: baseSig, aligned: false };
-
-  const trendDir = signal.direction; // 'bull' | 'bear'
+  const trendDir = signal.direction;
   const patternDir = patternType === 'bullish' ? 'bull' : patternType === 'bearish' ? 'bear' : null;
-
   if (!patternDir) return { significance: baseSig, aligned: false };
-
   const aligned = patternDir === trendDir;
-
-  if (aligned) {
-    // Promote significance
-    const promoted = baseSig === 'low' ? 'medium' : baseSig === 'medium' ? 'high' : 'high';
-    return { significance: promoted, aligned: true };
-  } else {
-    // Demote significance (counter-trend)
-    const demoted = baseSig === 'high' ? 'medium' : baseSig === 'medium' ? 'low' : 'low';
-    return { significance: demoted, aligned: false };
-  }
+  if (aligned) return { significance: baseSig === 'low' ? 'medium' : 'high', aligned: true };
+  return { significance: baseSig === 'high' ? 'medium' : 'low', aligned: false };
 }
 
 export function usePatternScanner(trendAssets: AssetTrend[] = []) {
@@ -74,11 +57,54 @@ export function usePatternScanner(trendAssets: AssetTrend[] = []) {
   const [scanning, setScanning] = useState(false);
   const [lastScanTime, setLastScanTime] = useState<number>(0);
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0 });
+  const [serverScanTime, setServerScanTime] = useState<number>(0);
   const scanningRef = useRef(false);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
+  const pollRef = useRef<ReturnType<typeof setInterval>>();
   const trendAssetsRef = useRef(trendAssets);
   trendAssetsRef.current = trendAssets;
 
+  // Load cached pattern results from DB
+  const loadFromDB = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('scan_cache')
+        .select('id, data, scanned_at')
+        .in('id', ['candlestick', 'chart', 'structure']);
+
+      if (error || !data) return false;
+
+      for (const row of data as any[]) {
+        const serverTime = new Date(row.scanned_at).getTime();
+        if (serverTime <= serverScanTime) continue;
+        
+        const patterns = (row.data || []) as unknown as DetectedPattern[];
+        if (row.id === 'candlestick') setCandlestickPatterns(patterns);
+        else if (row.id === 'chart') setChartPatterns(patterns);
+        else if (row.id === 'structure') setStructurePatterns(patterns);
+      }
+
+      const maxTime = Math.max(...data.map((r: any) => new Date(r.scanned_at).getTime()));
+      if (maxTime > serverScanTime) {
+        setServerScanTime(maxTime);
+        setLastScanTime(maxTime);
+      }
+
+      return true;
+    } catch (err) {
+      console.error('Failed to load patterns from DB:', err);
+      return false;
+    }
+  }, [serverScanTime]);
+
+  // Initial load from DB + polling
+  useEffect(() => {
+    loadFromDB();
+    pollRef.current = setInterval(loadFromDB, DB_POLL_INTERVAL);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [loadFromDB]);
+
+  // Manual scan (user-triggered)
   const runScan = useCallback(async () => {
     if (scanningRef.current) return;
     scanningRef.current = true;
@@ -115,9 +141,9 @@ export function usePatternScanner(trendAssets: AssetTrend[] = []) {
       let progress = 0;
       const currentTrends = trendAssetsRef.current;
 
-      const BATCH_SIZE = 8;
-      for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
-        const batch = symbols.slice(i, i + BATCH_SIZE);
+      const BATCH = 8;
+      for (let i = 0; i < symbols.length; i += BATCH) {
+        const batch = symbols.slice(i, i + BATCH);
         await Promise.all(batch.map(async ({ symbol, category, price }) => {
           for (const tf of SCAN_TIMEFRAMES) {
             try {
@@ -132,13 +158,7 @@ export function usePatternScanner(trendAssets: AssetTrend[] = []) {
                 const candleTime = (p.candleIndex >= 0 && p.candleIndex < candles.length) ? candles[p.candleIndex].time : 0;
                 const formedAt = candleTime > 0 ? candleTime : (candles[candles.length - 1]?.time ?? now);
                 const { significance, aligned } = adjustSignificance(p.significance, p.type, sym, tf, currentTrends);
-                newCandlestick.push({
-                  id: `cs-${symbol}-${tf}-${p.name}-${now}`,
-                  symbol: sym, timeframe: tf,
-                  pattern: { ...p, significance },
-                  price, detectedAt: now, formedAt, category: 'candlestick',
-                  trendAligned: aligned,
-                });
+                newCandlestick.push({ id: `cs-${symbol}-${tf}-${p.name}-${now}`, symbol: sym, timeframe: tf, pattern: { ...p, significance }, price, detectedAt: now, formedAt, category: 'candlestick', trendAligned: aligned });
               }
 
               const chPatterns = detectChartPatterns(candles);
@@ -146,13 +166,7 @@ export function usePatternScanner(trendAssets: AssetTrend[] = []) {
                 const candleTime = (p.endIndex >= 0 && p.endIndex < candles.length) ? candles[p.endIndex].time : 0;
                 const formedAt = candleTime > 0 ? candleTime : (candles[candles.length - 1]?.time ?? now);
                 const { significance, aligned } = adjustSignificance(p.significance, p.type, sym, tf, currentTrends);
-                newChart.push({
-                  id: `ch-${symbol}-${tf}-${p.name}-${now}`,
-                  symbol: sym, timeframe: tf,
-                  pattern: { ...p, significance },
-                  price, detectedAt: now, formedAt, category: 'chart',
-                  trendAligned: aligned,
-                });
+                newChart.push({ id: `ch-${symbol}-${tf}-${p.name}-${now}`, symbol: sym, timeframe: tf, pattern: { ...p, significance }, price, detectedAt: now, formedAt, category: 'chart', trendAligned: aligned });
               }
 
               const msEvents = detectMarketStructure(candles);
@@ -160,13 +174,7 @@ export function usePatternScanner(trendAssets: AssetTrend[] = []) {
                 const candleTime = (p.candleIndex >= 0 && p.candleIndex < candles.length) ? candles[p.candleIndex].time : 0;
                 const formedAt = candleTime > 0 ? candleTime : (candles[candles.length - 1]?.time ?? now);
                 const { significance, aligned } = adjustSignificance(p.significance, p.type, sym, tf, currentTrends);
-                newStructure.push({
-                  id: `ms-${symbol}-${tf}-${p.name}-${now}`,
-                  symbol: sym, timeframe: tf,
-                  pattern: { ...p, significance },
-                  price, detectedAt: now, formedAt, category: 'structure',
-                  trendAligned: aligned,
-                });
+                newStructure.push({ id: `ms-${symbol}-${tf}-${p.name}-${now}`, symbol: sym, timeframe: tf, pattern: { ...p, significance }, price, detectedAt: now, formedAt, category: 'structure', trendAligned: aligned });
               }
             } catch { /* skip */ }
             progress++;
@@ -174,7 +182,7 @@ export function usePatternScanner(trendAssets: AssetTrend[] = []) {
           }
         }));
 
-        if (i + BATCH_SIZE < symbols.length) {
+        if (i + BATCH < symbols.length) {
           await new Promise(r => setTimeout(r, 100));
         }
       }
@@ -191,25 +199,15 @@ export function usePatternScanner(trendAssets: AssetTrend[] = []) {
     }
   }, []);
 
-  useEffect(() => {
-    runScan();
-    intervalRef.current = setInterval(runScan, SCAN_INTERVAL_MS);
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [runScan]);
-
-  /** Sort by most recent first (formedAt desc), then by significance */
   const groupByTimeframe = (patterns: DetectedPattern[]): PatternGroup[] => {
     const groups: PatternGroup[] = [];
     for (const tf of SCAN_TIMEFRAMES) {
       const tfPatterns = patterns
         .filter(p => p.timeframe === tf)
         .sort((a, b) => {
-          // Primary: most recent first
           const timeDiff = b.formedAt - a.formedAt;
           if (timeDiff !== 0) return timeDiff;
-          // Secondary: trend-aligned first
           if (a.trendAligned !== b.trendAligned) return a.trendAligned ? -1 : 1;
-          // Tertiary: significance
           const sigOrder = { high: 0, medium: 1, low: 2 };
           return sigOrder[a.pattern.significance] - sigOrder[b.pattern.significance];
         })

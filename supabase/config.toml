@@ -1,1 +1,7 @@
 project_id = "otssdmzghjbeqntvuxgj"
+
+[functions.bybit-proxy]
+verify_jwt = false
+
+[functions.scanner-cron]
+verify_jwt = false
