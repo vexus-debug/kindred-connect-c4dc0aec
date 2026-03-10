@@ -14,45 +14,46 @@ interface ScannerMatrixProps {
   isWatched: (symbol: string) => boolean;
 }
 
+/** Flattened entry: one per symbol+timeframe combo */
+interface TrendEntry {
+  asset: AssetTrend;
+  tf: Timeframe;
+  sig: ConfirmedTrend;
+}
+
 export function ScannerMatrix({ assets, scanning, scanProgress, onAddToWatchlist, isWatched }: ScannerMatrixProps) {
   const [search, setSearch] = useState('');
-  const [sortBy, setSortBy] = useState<'confirmations' | 'change' | 'volume'>('confirmations');
-  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [filterTf, setFilterTf] = useState<Timeframe | 'all'>('all');
 
-  const filtered = useMemo(() => {
-    let result = assets.filter((a) =>
-      a.symbol.toLowerCase().includes(search.toLowerCase())
-    );
+  // Flatten all assets × timeframes into individual trend entries, sorted strongest first
+  const entries = useMemo(() => {
+    const result: TrendEntry[] = [];
 
-    // Filter to only assets with confirmed trends
-    if (filterTf !== 'all') {
-      result = result.filter(a => a.signals[filterTf]);
-    } else {
-      result = result.filter(a => Object.keys(a.signals).length > 0);
+    for (const asset of assets) {
+      if (search && !asset.symbol.toLowerCase().includes(search.toLowerCase())) continue;
+
+      const timeframes = filterTf === 'all' ? ALL_TIMEFRAMES : [filterTf];
+      for (const tf of timeframes) {
+        const sig = asset.signals[tf] as ConfirmedTrend | undefined;
+        if (sig && sig.confirmations !== undefined) {
+          result.push({ asset, tf, sig });
+        }
+      }
     }
 
+    // Sort by confirmations desc, then by absolute score desc
     result.sort((a, b) => {
-      if (sortBy === 'confirmations') {
-        const getMaxConf = (asset: AssetTrend) => {
-          const sigs = Object.values(asset.signals) as ConfirmedTrend[];
-          return Math.max(...sigs.map(s => s?.confirmations ?? 0), 0);
-        };
-        return getMaxConf(b) - getMaxConf(a);
-      }
-      if (sortBy === 'change') return Math.abs(b.change24h) - Math.abs(a.change24h);
-      return b.volume24h - a.volume24h;
+      const confDiff = b.sig.confirmations - a.sig.confirmations;
+      if (confDiff !== 0) return confDiff;
+      return Math.abs(b.sig.score) - Math.abs(a.sig.score);
     });
 
     return result;
-  }, [assets, search, sortBy, filterTf]);
+  }, [assets, search, filterTf]);
 
-  const trendCount = filtered.length;
-  const bullCount = filtered.filter(a => {
-    const sigs = Object.values(a.signals);
-    return sigs.some(s => s?.direction === 'bull');
-  }).length;
-  const bearCount = trendCount - bullCount;
+  const bullCount = entries.filter(e => e.sig.direction === 'bull').length;
+  const bearCount = entries.length - bullCount;
 
   return (
     <div className="flex h-full flex-col">
@@ -68,23 +69,10 @@ export function ScannerMatrix({ assets, scanning, scanProgress, onAddToWatchlist
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <div className="flex gap-1">
-            {(['confirmations', 'change', 'volume'] as const).map((s) => (
-              <button
-                key={s}
-                onClick={() => setSortBy(s)}
-                className={`rounded px-2 py-0.5 text-[10px] uppercase transition-colors ${
-                  sortBy === s ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {s === 'confirmations' ? 'conf' : s}
-              </button>
-            ))}
-          </div>
         </div>
 
         {/* Timeframe filter */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 flex-wrap">
           <span className="text-[9px] uppercase text-muted-foreground mr-1">TF:</span>
           <button
             onClick={() => setFilterTf('all')}
@@ -109,7 +97,7 @@ export function ScannerMatrix({ assets, scanning, scanProgress, onAddToWatchlist
 
         {/* Stats bar */}
         <div className="flex items-center gap-3 text-[10px]">
-          <span className="text-muted-foreground">{trendCount} confirmed trends</span>
+          <span className="text-muted-foreground">{entries.length} trends</span>
           <span className="trend-bull flex items-center gap-0.5"><TrendingUp className="h-2.5 w-2.5" />{bullCount}</span>
           <span className="trend-bear flex items-center gap-0.5"><TrendingDown className="h-2.5 w-2.5" />{bearCount}</span>
         </div>
@@ -133,21 +121,30 @@ export function ScannerMatrix({ assets, scanning, scanProgress, onAddToWatchlist
         </div>
       )}
 
-      {/* Trend Cards */}
+      {/* Ranked Trend List */}
       <ScrollArea className="flex-1">
         <div className="p-2 space-y-1.5">
-          {filtered.map((asset) => (
-            <TrendCard
-              key={asset.symbol}
-              asset={asset}
-              filterTf={filterTf}
-              expanded={expandedSymbol === asset.symbol}
-              onToggle={() => setExpandedSymbol(expandedSymbol === asset.symbol ? null : asset.symbol)}
-              watched={isWatched(asset.symbol)}
-              onWatch={() => onAddToWatchlist(asset.symbol)}
-            />
-          ))}
-          {filtered.length === 0 && !scanning && (
+          {entries.map((entry, idx) => {
+            const key = `${entry.asset.symbol}-${entry.tf}`;
+            return (
+              <TrendCard
+                key={key}
+                rank={idx + 1}
+                entry={entry}
+                expanded={expandedKey === key}
+                onToggle={() => setExpandedKey(expandedKey === key ? null : key)}
+                watched={isWatched(entry.asset.symbol)}
+                onWatch={() => onAddToWatchlist(entry.asset.symbol)}
+                otherSignals={
+                  Object.entries(entry.asset.signals)
+                    .filter(([t]) => t !== entry.tf)
+                    .map(([t, s]) => ({ tf: t as Timeframe, sig: s as ConfirmedTrend }))
+                    .filter(x => x.sig?.confirmations !== undefined)
+                }
+              />
+            );
+          })}
+          {entries.length === 0 && !scanning && (
             <div className="px-4 py-12 text-center text-xs text-muted-foreground">
               {assets.length === 0 ? 'Starting scan… waiting for data' : 'No confirmed trends found'}
             </div>
@@ -159,46 +156,34 @@ export function ScannerMatrix({ assets, scanning, scanProgress, onAddToWatchlist
 }
 
 function TrendCard({
-  asset, filterTf, expanded, onToggle, watched, onWatch,
+  rank, entry, expanded, onToggle, watched, onWatch, otherSignals,
 }: {
-  asset: AssetTrend;
-  filterTf: Timeframe | 'all';
+  rank: number;
+  entry: TrendEntry;
   expanded: boolean;
   onToggle: () => void;
   watched: boolean;
   onWatch: () => void;
+  otherSignals: { tf: Timeframe; sig: ConfirmedTrend }[];
 }) {
-  // Get the best signal to display
-  const relevantSignals = filterTf === 'all'
-    ? Object.entries(asset.signals) as [Timeframe, ConfirmedTrend][]
-    : asset.signals[filterTf] ? [[filterTf, asset.signals[filterTf]]] as [Timeframe, ConfirmedTrend][] : [];
-
-  const bestSignal = relevantSignals.reduce<{ tf: Timeframe; sig: ConfirmedTrend } | null>((best, [tf, sig]) => {
-    if (!sig) return best;
-    const ct = sig as ConfirmedTrend;
-    if (!best || (ct.confirmations ?? 0) > (best.sig.confirmations ?? 0)) return { tf, sig: ct };
-    return best;
-  }, null);
-
-  if (!bestSignal) return null;
-
-  const { tf, sig } = bestSignal;
+  const { asset, tf, sig } = entry;
   const isBull = sig.direction === 'bull';
   const changeColor = asset.change24h >= 0 ? 'trend-bull' : 'trend-bear';
-
   const ConfIcon = sig.strength === 'strong' ? ShieldCheck : sig.strength === 'moderate' ? Shield : ShieldAlert;
 
   return (
-    <div className={`rounded border transition-colors ${
-      isBull ? 'border-hsl(var(--trend-bull)/.2) bg-hsl(var(--trend-bull)/.03)' : 'border-hsl(var(--trend-bear)/.2) bg-hsl(var(--trend-bear)/.03)'
-    }`}
-    style={{
-      borderColor: isBull ? 'hsl(142 72% 45% / 0.2)' : 'hsl(0 72% 50% / 0.2)',
-      backgroundColor: isBull ? 'hsl(142 72% 45% / 0.03)' : 'hsl(0 72% 50% / 0.03)',
-    }}
+    <div
+      className="rounded border transition-colors"
+      style={{
+        borderColor: isBull ? 'hsl(142 72% 45% / 0.2)' : 'hsl(0 72% 50% / 0.2)',
+        backgroundColor: isBull ? 'hsl(142 72% 45% / 0.03)' : 'hsl(0 72% 50% / 0.03)',
+      }}
     >
       {/* Summary row */}
       <button onClick={onToggle} className="flex w-full items-center gap-2 px-3 py-2 text-left">
+        {/* Rank */}
+        <span className="text-[10px] tabular-nums text-muted-foreground w-4 flex-shrink-0 text-right">#{rank}</span>
+
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
           {isBull ? <TrendingUp className="h-3.5 w-3.5 trend-bull flex-shrink-0" /> : <TrendingDown className="h-3.5 w-3.5 trend-bear flex-shrink-0" />}
           <span className="text-xs font-bold truncate">{asset.symbol.replace('USDT', '')}</span>
@@ -206,7 +191,7 @@ function TrendCard({
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
-          <span className="text-[10px] tabular-nums text-foreground">
+          <span className="text-[10px] tabular-nums text-foreground hidden sm:inline">
             ${asset.price < 1 ? asset.price.toPrecision(4) : asset.price.toFixed(2)}
           </span>
           <span className={`text-[10px] tabular-nums ${changeColor}`}>
@@ -219,7 +204,7 @@ function TrendCard({
             'bg-muted text-muted-foreground'
           }`}>
             <ConfIcon className="h-2.5 w-2.5" />
-            {(sig as ConfirmedTrend).confirmations ?? '?'}/{(sig as ConfirmedTrend).totalChecks ?? '?'}
+            {sig.confirmations}/{sig.totalChecks}
           </div>
           <button
             onClick={(e) => { e.stopPropagation(); onWatch(); }}
@@ -231,19 +216,29 @@ function TrendCard({
         </div>
       </button>
 
-      {/* Expanded indicator details */}
+      {/* Expanded details */}
       {expanded && (
         <div className="border-t border-border/50 px-3 py-2 space-y-2">
-          {/* All timeframe signals overview */}
-          {filterTf === 'all' && relevantSignals.length > 1 && (
-            <div className="flex flex-wrap gap-1 pb-1">
-              {relevantSignals.map(([t, s]) => (
-                <span key={t} className={`rounded px-1.5 py-0.5 text-[9px] font-medium ${
-                  s.direction === 'bull' ? 'bg-primary/15 trend-bull' : 'bg-destructive/15 trend-bear'
-                }`}>
-                  {TIMEFRAME_LABELS[t]}: {s.direction === 'bull' ? '↑' : '↓'} {(s as ConfirmedTrend).confirmations}/{(s as ConfirmedTrend).totalChecks}
-                </span>
-              ))}
+          {/* Price on mobile */}
+          <div className="flex gap-3 text-[10px] sm:hidden">
+            <span className="text-foreground tabular-nums">
+              ${asset.price < 1 ? asset.price.toPrecision(4) : asset.price.toFixed(2)}
+            </span>
+          </div>
+
+          {/* Also trending on other timeframes */}
+          {otherSignals.length > 0 && (
+            <div>
+              <div className="text-[9px] uppercase text-muted-foreground font-medium mb-1">Also trending on</div>
+              <div className="flex flex-wrap gap-1">
+                {otherSignals.map(({ tf: t, sig: s }) => (
+                  <span key={t} className={`rounded px-1.5 py-0.5 text-[9px] font-medium ${
+                    s.direction === 'bull' ? 'bg-primary/15 trend-bull' : 'bg-destructive/15 trend-bear'
+                  }`}>
+                    {TIMEFRAME_LABELS[t]}: {s.direction === 'bull' ? '↑' : '↓'} {s.confirmations}/{s.totalChecks}
+                  </span>
+                ))}
+              </div>
             </div>
           )}
 
@@ -252,7 +247,7 @@ function TrendCard({
             <div className="text-[9px] uppercase text-muted-foreground font-medium mb-1">
               Indicator Breakdown ({TIMEFRAME_LABELS[tf]})
             </div>
-            {((sig as ConfirmedTrend).indicators ?? []).map((ind: IndicatorDetail) => (
+            {(sig.indicators ?? []).map((ind: IndicatorDetail) => (
               <div key={ind.name} className="flex items-center justify-between text-[10px]">
                 <div className="flex items-center gap-1.5">
                   <span className={`h-1.5 w-1.5 rounded-full ${
@@ -273,7 +268,7 @@ function TrendCard({
 
           {/* Quick stats */}
           <div className="flex gap-3 pt-1 border-t border-border/30 text-[9px] text-muted-foreground">
-            <span>RSI: {(sig as ConfirmedTrend).rsi?.toFixed(0) ?? '—'}</span>
+            <span>RSI: {sig.rsi?.toFixed(0) ?? '—'}</span>
             <span>ADX: {sig.adx.toFixed(0)}</span>
             <span>Vol: {sig.volumeRatio.toFixed(1)}x</span>
             <span>Score: {sig.score}</span>
