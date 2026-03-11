@@ -488,7 +488,10 @@ function analyzeTrend(candles: Candle[], emaPeriods = { fast: 9, slow: 21, mid: 
   probability -= (Math.min(bull, bear) / tw) * 10;
   probability = Math.max(15, Math.min(95, Math.round(probability)));
 
-  return { direction, strength, ema9: e9, ema21: e21, ema50: e50, ema200: e200, adx, volumeRatio, score, rsi, macdHistogram: macd.histogram, priceStructure, plusDI, minusDI, probability };
+  const confirmations = direction === "bull" ? confirmedBull : confirmedBear;
+  const totalChecks = totalIndicators + (totalIndicators - confirmedBull - confirmedBear); // total indicators checked
+
+  return { direction, strength, ema9: e9, ema21: e21, ema50: e50, ema200: e200, adx, volumeRatio, score, rsi, macdHistogram: macd.histogram, priceStructure, plusDI, minusDI, probability, confirmations, totalChecks };
 }
 
 // ─── Pattern Detection ──────────────────────────────────────────────
