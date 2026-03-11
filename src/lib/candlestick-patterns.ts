@@ -109,7 +109,7 @@ export function detectCandlestickPatterns(candles: Candle[], excludeLastCandle =
 
     // Bearish Engulfing
     if (isBearish(c) && isBullish(prev) && c.open >= prev.close && c.close <= prev.open && body > bodySize(prev)) {
-      patterns.push({ name: 'Bearish Engulfing', type: 'bearish', significance: 'high', candleIndex: i, description: 'Bear candle engulfs prior bull candle' });
+      patterns.push({ name: 'Bearish Engulfing', type: 'bearish', significance: 'high', candleIndex: i, description: 'Bear candle fully engulfs prior bull. Strong reversal signal. Enter short below low, stop above engulfing high. Target nearest support or 1:2 RR.' });
     }
 
     // Piercing Line
