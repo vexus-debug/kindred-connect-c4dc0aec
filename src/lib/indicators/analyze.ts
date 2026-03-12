@@ -111,17 +111,9 @@ function calculateTrendDuration(
   if (isBull && rsi > 75) exhaustionSignals.push(`RSI overbought (${rsi.toFixed(0)})`);
   if (!isBull && rsi < 25) exhaustionSignals.push(`RSI oversold (${rsi.toFixed(0)})`);
 
-  // MACD histogram declining (momentum waning)
-  if (candles.length > 3) {
-    const recentCloses = candles.slice(-20).map(c => c.close);
-    if (recentCloses.length >= 12) {
-      const { calculateMACD: calcMACD } = require('./momentum');
-      // Check if histogram is declining over last 3 bars
-      const macdData = calcMACD(recentCloses);
-      // Simplified: just use current macdHist direction vs trend
-      if (isBull && macdHist < 0) exhaustionSignals.push('MACD histogram negative');
-      if (!isBull && macdHist > 0) exhaustionSignals.push('MACD histogram positive');
-    }
+  // MACD histogram declining
+  if (isBull && macdHist < 0) exhaustionSignals.push('MACD histogram negative');
+  if (!isBull && macdHist > 0) exhaustionSignals.push('MACD histogram positive');
   }
 
   // Extended duration (trend might be overextended)
