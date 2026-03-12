@@ -20,6 +20,22 @@ export interface SupportResistance {
   resistanceDistance: number;
 }
 
+export interface TrendDuration {
+  bars: number;
+  startPrice: number;
+  startTime: number;
+  currentPrice: number;
+  trendMove: number; // percentage
+  fibRetrace382: number;
+  fibRetrace500: number;
+  fibRetrace618: number;
+  fibExtend1272: number;
+  fibExtend1618: number;
+  exhaustionRisk: 'low' | 'medium' | 'high';
+  exhaustionSignals: string[];
+  atrStop: number; // ATR-based trailing stop
+}
+
 export interface ConfirmedTrend extends TrendSignal {
   confirmations: number;
   totalChecks: number;
@@ -31,6 +47,7 @@ export interface ConfirmedTrend extends TrendSignal {
   minusDI: number;
   probability: number;
   supportResistance: SupportResistance;
+  trendDuration: TrendDuration;
 }
 
 /** Find nearest support and resistance */
