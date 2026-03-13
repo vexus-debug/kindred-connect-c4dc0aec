@@ -34,6 +34,8 @@ export interface TrendDuration {
   exhaustionRisk: 'low' | 'medium' | 'high';
   exhaustionSignals: string[];
   atrStop: number; // ATR-based trailing stop
+  invalidationLevel: number; // most recent HL (uptrend) or LH (downtrend)
+  invalidationDescription: string;
 }
 
 export interface ConfirmedTrend extends TrendSignal {
