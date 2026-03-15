@@ -553,10 +553,84 @@ export function analyzeTrend(
   else if (volClusters.highVolumeZone === 'resistance') { bearScore += w28; indicators.push({ name: 'Vol Clusters', signal: 'bear', value: `Resistance at VPOC`, confirmed: true, weight: w28 }); }
   else { indicators.push({ name: 'Vol Clusters', signal: 'neutral', value: volClusters.highVolumeZone === 'fair_value' ? 'At fair value' : 'No cluster', confirmed: false, weight: w28 }); }
 
+  // --- NEW: TRENDLINE ANALYSIS (weight: 2.0 — geometric confirmation) ---
+  const w29 = 2.0;
+  totalWeight += w29;
+  const trendlineResult = detectTrendlines(candles);
+  if (trendlineResult.direction === 'bull' && trendlineResult.fitQuality > 0.5) {
+    const bonus = trendlineResult.priceRespecting ? w29 : w29 * 0.6;
+    bullScore += bonus;
+    indicators.push({ name: 'Trendline', signal: 'bull', value: trendlineResult.description, confirmed: trendlineResult.fitQuality > 0.65, weight: w29 });
+  } else if (trendlineResult.direction === 'bear' && trendlineResult.fitQuality > 0.5) {
+    const bonus = trendlineResult.priceRespecting ? w29 : w29 * 0.6;
+    bearScore += bonus;
+    indicators.push({ name: 'Trendline', signal: 'bear', value: trendlineResult.description, confirmed: trendlineResult.fitQuality > 0.65, weight: w29 });
+  } else {
+    indicators.push({ name: 'Trendline', signal: 'neutral', value: trendlineResult.description, confirmed: false, weight: w29 });
+  }
+
+  // --- NEW: DIVERGENCE ANALYSIS (weight: 1.8 — reversal warning / continuation confirmation) ---
+  const w30 = 1.8;
+  totalWeight += w30;
+  const divergences = detectDivergences(candles);
+  const recentDivs = divergences.filter(d => d.endIndex >= candles.length - 10);
+
+  if (recentDivs.length > 0) {
+    // Hidden divergences CONFIRM trend (continuation), regular divergences WARN against it
+    const hiddenBull = recentDivs.filter(d => d.type === 'hidden_bull');
+    const hiddenBear = recentDivs.filter(d => d.type === 'hidden_bear');
+    const regularBull = recentDivs.filter(d => d.type === 'regular_bull');
+    const regularBear = recentDivs.filter(d => d.type === 'regular_bear');
+
+    if (hiddenBull.length > 0) {
+      bullScore += w30;
+      indicators.push({ name: 'Divergence', signal: 'bull', value: `Hidden bull div (${hiddenBull[0].indicator}) — continuation`, confirmed: true, weight: w30 });
+    } else if (hiddenBear.length > 0) {
+      bearScore += w30;
+      indicators.push({ name: 'Divergence', signal: 'bear', value: `Hidden bear div (${hiddenBear[0].indicator}) — continuation`, confirmed: true, weight: w30 });
+    } else if (regularBear.length > 0) {
+      // Regular bearish divergence penalizes bull signals
+      bearScore += w30 * 0.5;
+      indicators.push({ name: 'Divergence', signal: 'bear', value: `⚠ Bear div (${regularBear[0].indicator}) — reversal risk`, confirmed: true, weight: w30 });
+    } else if (regularBull.length > 0) {
+      bullScore += w30 * 0.5;
+      indicators.push({ name: 'Divergence', signal: 'bull', value: `⚠ Bull div (${regularBull[0].indicator}) — reversal risk`, confirmed: true, weight: w30 });
+    } else {
+      indicators.push({ name: 'Divergence', signal: 'neutral', value: 'No actionable divergence', confirmed: false, weight: w30 });
+    }
+  } else {
+    indicators.push({ name: 'Divergence', signal: 'neutral', value: 'No divergence detected', confirmed: false, weight: w30 });
+  }
+
+  // --- NEW: MULTI-EMA SLOPE MOMENTUM (weight: 1.2) ---
+  // All EMAs should be sloping in the same direction for high-accuracy trends
+  const w31 = 1.2;
+  totalWeight += w31;
+  const ema9Slope = ema9.length > 5 ? (ema9[ema9.length - 1] - ema9[ema9.length - 5]) / ema9[ema9.length - 5] * 100 : 0;
+  const ema21Slope = ema21.length > 5 ? (ema21[ema21.length - 1] - ema21[ema21.length - 5]) / ema21[ema21.length - 5] * 100 : 0;
+  const ema50Slope = ema50.length > 10 ? (ema50[ema50.length - 1] - ema50[ema50.length - 10]) / ema50[ema50.length - 10] * 100 : 0;
+  const allSlopesUp = ema9Slope > 0 && ema21Slope > 0 && ema50Slope > 0;
+  const allSlopesDown = ema9Slope < 0 && ema21Slope < 0 && ema50Slope < 0;
+  if (allSlopesUp) { bullScore += w31; indicators.push({ name: 'EMA Slopes', signal: 'bull', value: `All EMAs rising`, confirmed: true, weight: w31 }); }
+  else if (allSlopesDown) { bearScore += w31; indicators.push({ name: 'EMA Slopes', signal: 'bear', value: `All EMAs falling`, confirmed: true, weight: w31 }); }
+  else { indicators.push({ name: 'EMA Slopes', signal: 'neutral', value: 'Mixed EMA slopes', confirmed: false, weight: w31 }); }
+
+  // --- NEW: CLOSE POSITION IN RANGE (weight: 1.0) ---
+  // For bullish: price should be closing in upper 30% of recent range
+  const w32 = 1.0;
+  totalWeight += w32;
+  const rangeLookback = Math.min(candles.length, 20);
+  const recentCandles = candles.slice(-rangeLookback);
+  const rangeHigh = Math.max(...recentCandles.map(c => c.high));
+  const rangeLow = Math.min(...recentCandles.map(c => c.low));
+  const rangePos = rangeHigh === rangeLow ? 0.5 : (price - rangeLow) / (rangeHigh - rangeLow);
+  if (rangePos > 0.7) { bullScore += w32; indicators.push({ name: 'Range Position', signal: 'bull', value: `${(rangePos * 100).toFixed(0)}% (upper zone)`, confirmed: true, weight: w32 }); }
+  else if (rangePos < 0.3) { bearScore += w32; indicators.push({ name: 'Range Position', signal: 'bear', value: `${(rangePos * 100).toFixed(0)}% (lower zone)`, confirmed: true, weight: w32 }); }
+  else { indicators.push({ name: 'Range Position', signal: 'neutral', value: `${(rangePos * 100).toFixed(0)}% (mid-range)`, confirmed: false, weight: w32 }); }
+
   // ==========================================
-  // ESTABLISHED TREND FILTER
+  // ESTABLISHED TREND FILTER (stricter)
   // ==========================================
-  // Require trend consistency — price should be consistently on one side of key EMAs
   const isEstablished = consistency50 > 0.65 || consistency200 > 0.7;
 
   // ==========================================
@@ -568,6 +642,13 @@ export function analyzeTrend(
   // Need at least 55% weighted agreement AND trend must be established
   if (scoreRatio < 0.55 || !isEstablished) return null;
 
+  // NEW: Penalize if there's a strong opposing divergence
+  const hasOpposingDiv = recentDivs.some(d => {
+    const dirFromDiv = d.type.includes('bull') ? 'bull' : 'bear';
+    const mainDir = bullScore > bearScore ? 'bull' : 'bear';
+    return d.type.startsWith('regular_') && dirFromDiv === mainDir;
+  });
+
   const direction: TrendDirection = bullScore > bearScore ? 'bull' : 'bear';
 
   // Count confirmed indicators
@@ -575,12 +656,12 @@ export function analyzeTrend(
   const totalChecks = indicators.length;
 
   let strength: TrendStrength = 'weak';
-  if (scoreRatio >= 0.75 && confirmedCount >= 18) strength = 'strong';
-  else if (scoreRatio >= 0.65 && confirmedCount >= 14) strength = 'moderate';
+  if (scoreRatio >= 0.75 && confirmedCount >= 20) strength = 'strong';
+  else if (scoreRatio >= 0.65 && confirmedCount >= 15) strength = 'moderate';
 
   const score = direction === 'bull' ? Math.round(bullScore * 4) : -Math.round(bearScore * 4);
 
-  // Probability calculation
+  // Probability calculation (enhanced)
   const baseProbability = scoreRatio * 70;
   let probability = baseProbability;
 
@@ -593,8 +674,18 @@ export function analyzeTrend(
   // Volume confirmation bonus (up to 5%)
   if (volumeRatio > 1.3 || volSpike.consecutiveHighVolume >= 2) probability += 5;
 
-  // Squeeze reduces reliability slightly
+  // Trendline confirmation bonus (up to 5%)
+  if (trendlineResult.direction === direction && trendlineResult.fitQuality > 0.6) probability += 5;
+
+  // Hidden divergence confirmation bonus (up to 3%)
+  const hiddenDivConfirm = recentDivs.some(d => d.type === (direction === 'bull' ? 'hidden_bull' : 'hidden_bear'));
+  if (hiddenDivConfirm) probability += 3;
+
+  // Squeeze reduces reliability
   if (isSqueeze) probability -= 3;
+
+  // Opposing divergence penalty
+  if (hasOpposingDiv) probability -= 5;
 
   // Opposing signal penalty
   const opposingRatio = Math.min(bullScore, bearScore) / totalWeight;
