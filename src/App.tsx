@@ -47,6 +47,7 @@ const App = () => (
                   <Route path="/trade-planner" element={<TradePlanner />} />
                   <Route path="/market-overview" element={<MarketOverview />} />
                   <Route path="/multi-timeframe" element={<MultiTimeframe />} />
+                  <Route path="/mtf" element={<MultiTimeframe />} />
                   <Route path="/heatmap" element={<Heatmap />} />
                   <Route path="/supply-demand" element={<SupplyDemand />} />
                   <Route path="/volatility" element={<VolatilityRanking />} />
