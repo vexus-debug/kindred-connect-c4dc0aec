@@ -4,6 +4,8 @@ import { calculateADX, calculateATR, calculateParabolicSAR, calculateSupertrend,
 import { calculateRSI, calculateMACD, calculateStochastic, calculateStochRSI, calculateWilliamsR, calculateCCI, calculateROC, calculateMFI, calculateCMF, calculateTSI } from './momentum';
 import { calculateBollingerBands, calculateKeltnerChannels, calculateDonchianChannels, calculateHistoricalVolatility, detectSqueeze } from './volatility';
 import { calculateVolumeRatio, calculateOBV, calculateAD, calculateVPT, detectVolumeSpikes, detectVolumeClusters } from './volume';
+import { detectTrendlines } from './trendlines';
+import { detectDivergences } from '@/lib/divergence';
 
 export interface IndicatorDetail {
   name: string;
