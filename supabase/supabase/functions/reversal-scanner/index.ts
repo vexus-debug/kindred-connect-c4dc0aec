@@ -744,8 +744,8 @@ async function runReversalScan(supabase: any) {
             result.score >= 60 ? "A" :
             result.score >= 45 ? "B" : "C";
 
-          // Only include B grade and above
-          if (grade === "C") continue;
+          // Include score >= 35
+          if (result.score < 35) continue;
 
           const rr = Math.abs(result.target - price) / Math.abs(price - result.invalidation);
 

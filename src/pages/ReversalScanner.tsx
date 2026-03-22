@@ -208,7 +208,7 @@ export default function ReversalScanner() {
           <div className="h-4 w-px bg-border" />
           {/* Grade */}
           <div className="flex items-center gap-1">
-            {(['all', 'S', 'A', 'B'] as GradeFilter[]).map(g => (
+            {(['all', 'S', 'A', 'B', 'C'] as GradeFilter[]).map(g => (
               <button
                 key={g}
                 onClick={() => setGradeFilter(g)}
