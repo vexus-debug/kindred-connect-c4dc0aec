@@ -5,6 +5,12 @@ import type { Candle, Timeframe } from '@/types/scanner';
 import { TIMEFRAME_LABELS, ALL_TIMEFRAMES } from '@/types/scanner';
 import { X, Maximize2, Minimize2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { buildPatternDrawing, type PatternDrawing } from '@/lib/pattern-drawing';
+
+export interface PatternHighlight {
+  name: string;
+  category: 'candlestick' | 'chart' | 'structure';
+}
 
 interface ChartViewProps {
   symbol: string;
@@ -12,22 +18,26 @@ interface ChartViewProps {
   onClose?: () => void;
   supportLevels?: number[];
   resistanceLevels?: number[];
+  patternHighlight?: PatternHighlight;
 }
 
 export function ChartView({
   symbol, initialTimeframe = '60', onClose,
   supportLevels = [], resistanceLevels = [],
+  patternHighlight,
 }: ChartViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
   const emaSeriesRefs = useRef<any[]>([]);
+  const patternSeriesRefs = useRef<any[]>([]);
   const [timeframe, setTimeframe] = useState<Timeframe>(initialTimeframe);
   const [loading, setLoading] = useState(true);
   const [candles, setCandles] = useState<Candle[]>([]);
   const [showEMAs, setShowEMAs] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [patternDrawing, setPatternDrawing] = useState<PatternDrawing | null>(null);
 
   // Create chart
   useEffect(() => {
@@ -117,6 +127,16 @@ export function ChartView({
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // Build pattern drawing when candles load and pattern is specified
+  useEffect(() => {
+    if (!patternHighlight || candles.length < 20) {
+      setPatternDrawing(null);
+      return;
+    }
+    const drawing = buildPatternDrawing(candles, patternHighlight.name, patternHighlight.category);
+    setPatternDrawing(drawing);
+  }, [candles, patternHighlight]);
+
   // Update chart data
   useEffect(() => {
     const chart = chartRef.current;
@@ -127,6 +147,12 @@ export function ChartView({
       try { chart.removeSeries(s); } catch {}
     }
     emaSeriesRefs.current = [];
+
+    // Remove old pattern series
+    for (const s of patternSeriesRefs.current) {
+      try { chart.removeSeries(s); } catch {}
+    }
+    patternSeriesRefs.current = [];
 
     const candleData = candles.map(c => ({
       time: (c.time / 1000) as any,
@@ -187,8 +213,70 @@ export function ChartView({
       emaSeriesRefs.current = [ema9Series, ema21Series, ema50Series];
     }
 
+    // Pattern overlay lines
+    if (patternDrawing) {
+      for (const line of patternDrawing.lines) {
+        const lineSeries = chart.addSeries(LineSeries, {
+          color: line.color,
+          lineWidth: line.width as 1 | 2 | 3 | 4,
+          lineStyle: line.style === 'dashed' ? LineStyle.Dashed : LineStyle.Solid,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        lineSeries.setData([
+          { time: line.startTime as any, value: line.startPrice },
+          { time: line.endTime as any, value: line.endPrice },
+        ]);
+        patternSeriesRefs.current.push(lineSeries);
+      }
+
+      // Pattern markers on candle series
+      if (patternDrawing.markers.length > 0) {
+        const markers = patternDrawing.markers
+          .map(m => ({
+            time: m.time as any,
+            position: m.position,
+            color: m.color,
+            shape: m.shape,
+            text: m.text,
+          }))
+          .sort((a: any, b: any) => a.time - b.time);
+        candleSeriesRef.current.setMarkers(markers);
+      }
+
+      // Zone overlays (rendered as area between two line series)
+      for (const zone of patternDrawing.zones) {
+        const upperLine = chart.addSeries(LineSeries, {
+          color: zone.color,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dotted,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        const lowerLine = chart.addSeries(LineSeries, {
+          color: zone.color,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dotted,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        upperLine.setData([
+          { time: zone.startTime as any, value: zone.highPrice },
+          { time: zone.endTime as any, value: zone.highPrice },
+        ]);
+        lowerLine.setData([
+          { time: zone.startTime as any, value: zone.lowPrice },
+          { time: zone.endTime as any, value: zone.lowPrice },
+        ]);
+        patternSeriesRefs.current.push(upperLine, lowerLine);
+      }
+    }
+
     chart.timeScale().fitContent();
-  }, [candles, supportLevels, resistanceLevels, showEMAs]);
+  }, [candles, supportLevels, resistanceLevels, showEMAs, patternDrawing]);
 
   return (
     <div className={`flex flex-col bg-background border border-border rounded-lg overflow-hidden ${isFullscreen ? 'fixed inset-0 z-50' : 'h-full'}`}>
@@ -196,6 +284,15 @@ export function ChartView({
       <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
         <div className="flex items-center gap-2">
           <span className="text-xs font-bold">{symbol.replace('USDT', '')}/USDT</span>
+          {patternDrawing && (
+            <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded ${
+              patternDrawing.type === 'bullish' ? 'bg-primary/20 text-primary' :
+              patternDrawing.type === 'bearish' ? 'bg-destructive/20 text-destructive' :
+              'bg-accent/20 text-accent'
+            }`}>
+              {patternDrawing.label}
+            </span>
+          )}
           {loading && <span className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse-dot" />}
         </div>
         <div className="flex items-center gap-1">

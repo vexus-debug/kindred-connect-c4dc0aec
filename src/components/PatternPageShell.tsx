@@ -3,6 +3,7 @@ import { RefreshCw, TrendingUp, TrendingDown, Clock, Filter, X, Target, ArrowUpR
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
+import { ChartView, type PatternHighlight } from '@/components/ChartView';
 import type { PatternGroup, DetectedPattern } from '@/hooks/usePatternScanner';
 import { TIMEFRAME_LABELS, type Timeframe } from '@/types/scanner';
 
@@ -21,12 +22,20 @@ interface PatternPageShellProps {
   onRescan: () => void;
 }
 
+interface SelectedPattern {
+  symbol: string;
+  timeframe: Timeframe;
+  patternName: string;
+  category: 'candlestick' | 'chart' | 'structure';
+}
+
 export function PatternPageShell({
   title, subtitle, groups, scanning, lastScanTime, scanProgress, onRescan,
 }: PatternPageShellProps) {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [sigFilter, setSigFilter] = useState<SigFilter>('all');
   const [tfFilter, setTfFilter] = useState<Timeframe | 'all'>('all');
+  const [selectedPattern, setSelectedPattern] = useState<SelectedPattern | null>(null);
 
   const lastScanStr = lastScanTime
     ? new Date(lastScanTime).toLocaleTimeString('en-US', { hour12: false })
@@ -62,6 +71,16 @@ export function PatternPageShell({
     setTfFilter('all');
   };
 
+  const handlePatternClick = (dp: DetectedPattern) => {
+    const fullSymbol = dp.symbol.includes('USDT') ? dp.symbol : `${dp.symbol}USDT`;
+    setSelectedPattern({
+      symbol: fullSymbol,
+      timeframe: dp.timeframe,
+      patternName: dp.pattern.name,
+      category: dp.category,
+    });
+  };
+
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
@@ -89,7 +108,6 @@ export function PatternPageShell({
       {/* Filter bar */}
       <div className="border-b border-border px-4 py-2">
         <div className="flex items-center gap-3 flex-wrap">
-          {/* Type filter */}
           <div className="flex items-center gap-1">
             {(['all', 'bullish', 'bearish'] as TypeFilter[]).map(t => (
               <button
@@ -110,7 +128,6 @@ export function PatternPageShell({
 
           <div className="h-4 w-px bg-border" />
 
-          {/* Timeframe filter */}
           <div className="flex items-center gap-1">
             <button
               onClick={() => setTfFilter('all')}
@@ -155,6 +172,21 @@ export function PatternPageShell({
         </div>
       )}
 
+      {/* Chart overlay when pattern selected */}
+      {selectedPattern && (
+        <div className="border-b border-border" style={{ height: '350px' }}>
+          <ChartView
+            symbol={selectedPattern.symbol}
+            initialTimeframe={selectedPattern.timeframe}
+            onClose={() => setSelectedPattern(null)}
+            patternHighlight={{
+              name: selectedPattern.patternName,
+              category: selectedPattern.category,
+            }}
+          />
+        </div>
+      )}
+
       {/* Pattern cards */}
       <ScrollArea className="flex-1">
         <div className="p-3 space-y-5">
@@ -179,7 +211,12 @@ export function PatternPageShell({
               </div>
               <div className="space-y-3">
                 {group.patterns.map((dp) => (
-                  <PatternCard key={dp.id} pattern={dp} />
+                  <PatternCard
+                    key={dp.id}
+                    pattern={dp}
+                    isSelected={selectedPattern?.symbol === (dp.symbol.includes('USDT') ? dp.symbol : `${dp.symbol}USDT`) && selectedPattern?.patternName === dp.pattern.name && selectedPattern?.timeframe === dp.timeframe}
+                    onClick={() => handlePatternClick(dp)}
+                  />
                 ))}
               </div>
             </div>
@@ -190,7 +227,7 @@ export function PatternPageShell({
   );
 }
 
-function PatternCard({ pattern: dp }: { pattern: DetectedPattern }) {
+function PatternCard({ pattern: dp, isSelected, onClick }: { pattern: DetectedPattern; isSelected: boolean; onClick: () => void }) {
   const p = dp.pattern;
   const isBull = p.type === 'bullish';
   const isBear = p.type === 'bearish';
@@ -201,7 +238,10 @@ function PatternCard({ pattern: dp }: { pattern: DetectedPattern }) {
 
   return (
     <div
-      className="rounded-lg border overflow-hidden"
+      onClick={onClick}
+      className={`rounded-lg border overflow-hidden cursor-pointer transition-all hover:brightness-110 ${
+        isSelected ? 'ring-1 ring-accent' : ''
+      }`}
       style={{
         borderColor: isBull
           ? 'hsl(142 72% 45% / 0.25)'
@@ -240,7 +280,6 @@ function PatternCard({ pattern: dp }: { pattern: DetectedPattern }) {
 
       {/* Main content */}
       <div className="px-3 py-3 space-y-2">
-        {/* Symbol + Pattern name */}
         <div className="flex items-start justify-between">
           <div>
             <h3 className="text-base font-bold text-foreground leading-tight">{dp.symbol}</h3>
@@ -259,12 +298,10 @@ function PatternCard({ pattern: dp }: { pattern: DetectedPattern }) {
           </div>
         </div>
 
-        {/* Description */}
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           {p.description}
         </p>
 
-        {/* Trading tip */}
         {tradingTip && (
           <div className="rounded bg-secondary/50 px-2.5 py-2 flex items-start gap-2">
             <Target className="h-3.5 w-3.5 text-accent mt-0.5 flex-shrink-0" />
@@ -272,7 +309,6 @@ function PatternCard({ pattern: dp }: { pattern: DetectedPattern }) {
           </div>
         )}
 
-        {/* Bottom meta */}
         <div className="flex items-center justify-between pt-1">
           <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
             <span className="tabular-nums font-medium text-foreground/70">
@@ -316,7 +352,6 @@ function getTradingTip(name: string, type: string, price: number): string | null
   if (!direction) return null;
 
   const tips: Record<string, string> = {
-    // Candlestick
     'Bullish Engulfing': `Look for ${direction} entries on confirmation. Place stop below the engulfing candle low.`,
     'Bearish Engulfing': `Consider ${direction} entries after next candle confirms. Stop above the engulfing candle high.`,
     'Hammer': `Potential reversal. Enter ${direction} on next candle close above hammer high. Stop below hammer low.`,
@@ -326,7 +361,6 @@ function getTradingTip(name: string, type: string, price: number): string | null
     'Doji': `Indecision candle. Wait for directional confirmation before entering.`,
     'Dragonfly Doji': `Potential ${direction} reversal. Confirm with next candle.`,
     'Gravestone Doji': `Potential ${direction} reversal. Confirm with next candle close.`,
-    // Chart patterns
     'Double Top': `Enter ${direction} on neckline break. Target = pattern height projected from neckline.`,
     'Double Bottom': `Enter ${direction} on neckline break. Target = pattern height projected upward from neckline.`,
     'Head and Shoulders': `Enter ${direction} on neckline break with volume. Target = head-to-neckline distance.`,
@@ -337,7 +371,6 @@ function getTradingTip(name: string, type: string, price: number): string | null
     'Falling Wedge': `Enter ${direction} on upper trendline break. Target = wedge height.`,
     'Bull Flag': `Enter ${direction} on flag breakout. Target = flagpole height from breakout point.`,
     'Bear Flag': `Enter ${direction} on flag breakdown. Target = flagpole height from breakdown point.`,
-    // Market structure
     'Break of Structure (BOS)': `Trend continuation confirmed. Look for pullback entries in the direction of the break.`,
     'Change of Character (CHoCH)': `Potential trend reversal. Wait for pullback to enter in the new trend direction.`,
     'Fair Value Gap (FVG)': `Price may revisit this imbalance zone. Look for entries when price retests the gap.`,
