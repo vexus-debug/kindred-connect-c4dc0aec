@@ -3,7 +3,7 @@ import { useSharedPatternScanner } from '@/contexts/PatternScannerContext';
 import type { DetectedPattern, PatternGroup } from '@/hooks/usePatternScanner';
 import type { SmcEvent, SmcMeta } from '@/lib/smc';
 import { TIMEFRAME_LABELS, type Timeframe } from '@/types/scanner';
-import { ChartView } from '@/components/ChartView';
+
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -20,7 +20,7 @@ const MarketStructurePage = () => {
   const { structureGroups, scanning, lastScanTime, scanProgress, runScan } = useSharedPatternScanner();
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [tfFilter, setTfFilter] = useState<Timeframe | 'all'>('all');
-  const [selectedPattern, setSelectedPattern] = useState<{ symbol: string; timeframe: Timeframe; patternName: string } | null>(null);
+  
 
   const filteredGroups = useMemo(() => {
     const result: PatternGroup[] = [];
@@ -40,10 +40,6 @@ const MarketStructurePage = () => {
   const totalPatterns = filteredGroups.reduce((s, g) => s + g.patterns.length, 0);
   const hasFilters = typeFilter !== 'all' || tfFilter !== 'all';
 
-  const handleClick = (dp: DetectedPattern) => {
-    const fullSymbol = dp.symbol.includes('USDT') ? dp.symbol : `${dp.symbol}USDT`;
-    setSelectedPattern({ symbol: fullSymbol, timeframe: dp.timeframe, patternName: dp.pattern.name });
-  };
 
   return (
     <div className="flex h-full flex-col">
@@ -121,16 +117,6 @@ const MarketStructurePage = () => {
         </div>
       )}
 
-      {selectedPattern && (
-        <div className="border-b border-border" style={{ height: '350px' }}>
-          <ChartView
-            symbol={selectedPattern.symbol}
-            initialTimeframe={selectedPattern.timeframe}
-            onClose={() => setSelectedPattern(null)}
-            patternHighlight={{ name: selectedPattern.patternName, category: 'structure' }}
-          />
-        </div>
-      )}
 
       <ScrollArea className="flex-1">
         <div className="p-3 space-y-5">
@@ -158,12 +144,8 @@ const MarketStructurePage = () => {
                   <SmcCard
                     key={dp.id}
                     dp={dp}
-                    isSelected={
-                      selectedPattern?.symbol === (dp.symbol.includes('USDT') ? dp.symbol : `${dp.symbol}USDT`) &&
-                      selectedPattern?.patternName === dp.pattern.name &&
-                      selectedPattern?.timeframe === dp.timeframe
-                    }
-                    onClick={() => handleClick(dp)}
+                    isSelected={false}
+                    onClick={() => {}}
                   />
                 ))}
               </div>
