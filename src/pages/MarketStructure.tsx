@@ -110,8 +110,21 @@ const MarketStructurePage = () => {
               >{TIMEFRAME_LABELS[tf]}</button>
             ))}
           </div>
+          <div className="h-4 w-px bg-border" />
+          <div className="flex items-center gap-1">
+            <span className="text-[9px] text-muted-foreground mr-0.5">CHoCH Fails:</span>
+            {CHOCH_FAIL_OPTIONS.map(opt => (
+              <button
+                key={opt}
+                onClick={() => setChochFailFilter(opt)}
+                className={`rounded-full px-2 py-1 text-[10px] font-medium transition-colors ${
+                  chochFailFilter === opt ? 'bg-destructive/20 text-destructive' : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >{opt === 'all' ? 'Any' : opt}</button>
+            ))}
+          </div>
           {hasFilters && (
-            <button onClick={() => { setTypeFilter('all'); setTfFilter('all'); }}
+            <button onClick={() => { setTypeFilter('all'); setTfFilter('all'); setChochFailFilter('all'); }}
               className="flex items-center gap-0.5 rounded-full px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground">
               <X className="h-2.5 w-2.5" /> Clear
             </button>
