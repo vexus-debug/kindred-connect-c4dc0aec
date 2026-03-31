@@ -2,12 +2,13 @@ import { useState, useRef, useCallback } from 'react';
 import { fetchTickers, fetchKlines } from '@/lib/bybit-api';
 import { findSwings } from '@/lib/smc/swings';
 import { countFailedChoch } from '@/lib/smc/bos-choch';
+import { analyzeExhaustion, type FullExhaustionAnalysis } from '@/lib/smc/exhaustion';
 import type { Timeframe } from '@/types/scanner';
 import { TIMEFRAME_LABELS } from '@/types/scanner';
 
 const SCAN_TIMEFRAMES: Timeframe[] = ['1', '5', '15', '60', '240', 'D', 'W'];
 const TOP_SYMBOLS = 50;
-const BATCH = 10; // larger batch since we're doing much less work per symbol
+const BATCH = 10;
 
 export interface ChochResult {
   id: string;
@@ -17,6 +18,7 @@ export interface ChochResult {
   trendDirection: 'bullish' | 'bearish' | 'unknown';
   price: number;
   detectedAt: number;
+  exhaustion: FullExhaustionAnalysis;
 }
 
 export interface ChochGroup {
@@ -38,7 +40,6 @@ export function useChochScanner() {
     setScanning(true);
 
     try {
-      // Fetch top symbols by volume
       const symbolMap = new Map<string, { symbol: string; category: 'spot' | 'linear'; price: number }>();
       for (const cat of ['linear', 'spot'] as const) {
         try {
@@ -76,21 +77,10 @@ export function useChochScanner() {
               if (closedCandles.length < 20) { progress++; continue; }
 
               const swings = findSwings(closedCandles, 3);
-              const highs = swings.filter(s => s.type === 'high');
-              const lows = swings.filter(s => s.type === 'low');
-
               const failures = countFailedChoch(closedCandles, swings);
 
-              // Determine current trend direction
-              let trendDirection: 'bullish' | 'bearish' | 'unknown' = 'unknown';
-              if (highs.length >= 2 && lows.length >= 2) {
-                const lastHH = highs[highs.length - 1].price > highs[highs.length - 2].price;
-                const lastHL = lows[lows.length - 1].price > lows[lows.length - 2].price;
-                const lastLH = highs[highs.length - 1].price < highs[highs.length - 2].price;
-                const lastLL = lows[lows.length - 1].price < lows[lows.length - 2].price;
-                if (lastHH && lastHL) trendDirection = 'bullish';
-                else if (lastLH && lastLL) trendDirection = 'bearish';
-              }
+              // Full exhaustion analysis
+              const exhaustion = analyzeExhaustion(closedCandles, failures);
 
               const sym = symbol.replace('USDT', '');
               newResults.push({
@@ -98,9 +88,10 @@ export function useChochScanner() {
                 symbol: sym,
                 timeframe: tf,
                 chochFailures: failures,
-                trendDirection,
+                trendDirection: exhaustion.trendDirection,
                 price,
                 detectedAt: Date.now(),
+                exhaustion,
               });
             } catch { /* skip */ }
             progress++;
@@ -128,7 +119,7 @@ export function useChochScanner() {
     for (const tf of SCAN_TIMEFRAMES) {
       const tfResults = items
         .filter(r => r.timeframe === tf)
-        .sort((a, b) => b.chochFailures - a.chochFailures);
+        .sort((a, b) => b.exhaustion.exhaustionIndex.value - a.exhaustion.exhaustionIndex.value);
       if (tfResults.length > 0) {
         groups.push({ timeframe: tf, label: TIMEFRAME_LABELS[tf], results: tfResults });
       }
@@ -136,5 +127,35 @@ export function useChochScanner() {
     return groups;
   }, []);
 
-  return { results, scanning, scanProgress, lastScanTime, runScan, groupByTimeframe };
+  // Rank all results by exhaustion score across all timeframes
+  const getRankedResults = useCallback((items: ChochResult[]): ChochResult[] => {
+    // Group by symbol, take the highest exhaustion score per symbol
+    const symbolBest = new Map<string, ChochResult>();
+    for (const r of items) {
+      const existing = symbolBest.get(r.symbol);
+      if (!existing || r.exhaustion.exhaustionIndex.value > existing.exhaustion.exhaustionIndex.value) {
+        symbolBest.set(r.symbol, r);
+      }
+    }
+    return Array.from(symbolBest.values())
+      .sort((a, b) => b.exhaustion.exhaustionIndex.value - a.exhaustion.exhaustionIndex.value);
+  }, []);
+
+  // Multi-timeframe CHoCH tracking per symbol
+  const getMtfChoch = useCallback((items: ChochResult[]): Map<string, { tf: Timeframe; failures: number }[]> => {
+    const map = new Map<string, { tf: Timeframe; failures: number }[]>();
+    for (const r of items) {
+      if (r.chochFailures === 0) continue;
+      if (!map.has(r.symbol)) map.set(r.symbol, []);
+      map.get(r.symbol)!.push({ tf: r.timeframe, failures: r.chochFailures });
+    }
+    // Sort each symbol's entries by timeframe importance
+    const tfOrder: Record<Timeframe, number> = { '1': 0, '5': 1, '15': 2, '60': 3, '240': 4, 'D': 5, 'W': 6 };
+    for (const [, entries] of map) {
+      entries.sort((a, b) => tfOrder[a.tf] - tfOrder[b.tf]);
+    }
+    return map;
+  }, []);
+
+  return { results, scanning, scanProgress, lastScanTime, runScan, groupByTimeframe, getRankedResults, getMtfChoch };
 }
