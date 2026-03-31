@@ -154,13 +154,15 @@ export function detectBosChoch(candles: Candle[], swings: SwingPoint[]): SmcEven
 
 /** Detect trend continuation: BOS → pullback → BOS */
 /**
- * Count failed CHoCH attempts in the current trend.
- * A failed CHoCH = price made a swing that looked like a change of character
- * (e.g., a higher-high after a series of lower-highs in a downtrend)
- * but the trend resumed in the original direction afterward.
+ * Count REAL failed CHoCH attempts in the current trend.
  *
- * We walk backwards from the most recent swing to find the current trend start,
- * then count how many CHoCH attempts failed within that trend.
+ * A failed CHoCH is NOT just any minor swing — it requires:
+ * 1. An established trend (sequence of HH/HL or LH/LL)
+ * 2. A swing that ACTUALLY breaks the previous structural level
+ *    (e.g., in an uptrend, price closes below the previous higher-low)
+ * 3. But the trend then RESUMES — price makes a new swing in the original
+ *    trend direction, invalidating the CHoCH attempt
+ * 4. The break must be significant (> 0.3x ATR to filter noise)
  */
 export function countFailedChoch(candles: Candle[], swings: SwingPoint[]): number {
   const highs = swings.filter(s => s.type === 'high');
@@ -168,60 +170,95 @@ export function countFailedChoch(candles: Candle[], swings: SwingPoint[]): numbe
 
   if (highs.length < 3 || lows.length < 3) return 0;
 
-  // Determine current trend direction from the last few swings
+  // Calculate ATR for significance filter
+  const atr = calcMinATR(candles);
+  if (atr === 0) return 0;
+
+  // Determine current trend direction from the last two swing pairs
   const lastHH = highs[highs.length - 1].price > highs[highs.length - 2].price;
   const lastHL = lows[lows.length - 1].price > lows[lows.length - 2].price;
   const lastLH = highs[highs.length - 1].price < highs[highs.length - 2].price;
   const lastLL = lows[lows.length - 1].price < lows[lows.length - 2].price;
 
-  // Bullish trend: HH + HL series, Bearish trend: LH + LL series
   const isBullTrend = lastHH && lastHL;
   const isBearTrend = lastLH && lastLL;
 
   if (!isBullTrend && !isBearTrend) return 0;
 
   let failures = 0;
+  const minBreakSize = atr * 0.3; // minimum break size to count as real CHoCH attempt
 
   if (isBullTrend) {
-    // In a bullish trend, a failed CHoCH = a lower-low that didn't persist
-    // (price made LL suggesting bearish CHoCH, but then made HL again)
-    // Walk backwards through lows to find the trend start
-    let trendStart = 0;
-    for (let i = lows.length - 2; i >= 1; i--) {
-      if (lows[i].price < lows[i - 1].price) {
-        // This was a LL — check if it was followed by a recovery (HL)
-        const nextLow = lows[i + 1];
-        if (nextLow && nextLow.price > lows[i].price) {
-          // Failed bearish CHoCH: LL didn't persist, price made HL after
-          failures++;
+    // In a bullish trend (HH/HL), a failed CHoCH attempt is:
+    // Price breaks BELOW a previous higher-low (actual structure break, not just a wick)
+    // but then recovers and makes a new higher-low above the broken level
+    for (let i = 1; i < lows.length - 1; i++) {
+      const prevLow = lows[i - 1]; // the structural level (previous HL)
+      const breakLow = lows[i];    // the potential CHoCH break
+      const nextLow = lows[i + 1]; // the recovery
+
+      // Must break below previous structural low significantly
+      const breakSize = prevLow.price - breakLow.price;
+      if (breakSize < minBreakSize) continue; // Not significant enough
+
+      // Must have a candle that CLOSED below the structural level (not just wicked)
+      let hadCloseBelow = false;
+      for (let j = breakLow.index - 2; j <= Math.min(breakLow.index + 2, candles.length - 1); j++) {
+        if (j >= 0 && j < candles.length && candles[j].close < prevLow.price) {
+          hadCloseBelow = true;
+          break;
         }
       }
-      // If we find two consecutive lower-lows without recovery, that's
-      // before our current trend started
-      if (i >= 2 && lows[i].price < lows[i - 1].price && lows[i - 1].price < lows[i - 2].price) {
-        trendStart = i;
-        break;
+      if (!hadCloseBelow) continue; // Was just a wick — not a real break
+
+      // Recovery: next low must be above the broken level (trend resumed)
+      if (nextLow.price > prevLow.price) {
+        failures++;
       }
     }
   } else {
-    // In a bearish trend, a failed CHoCH = a higher-high that didn't persist
-    // (price made HH suggesting bullish CHoCH, but then made LH again)
-    for (let i = highs.length - 2; i >= 1; i--) {
-      if (highs[i].price > highs[i - 1].price) {
-        // This was a HH — check if it was followed by a LH
-        const nextHigh = highs[i + 1];
-        if (nextHigh && nextHigh.price < highs[i].price) {
-          // Failed bullish CHoCH: HH didn't persist, price made LH after
-          failures++;
+    // In a bearish trend (LH/LL), a failed CHoCH attempt is:
+    // Price breaks ABOVE a previous lower-high (actual structure break)
+    // but then fails and makes a new lower-high below the broken level
+    for (let i = 1; i < highs.length - 1; i++) {
+      const prevHigh = highs[i - 1]; // the structural level (previous LH)
+      const breakHigh = highs[i];     // the potential CHoCH break
+      const nextHigh = highs[i + 1]; // the recovery
+
+      const breakSize = breakHigh.price - prevHigh.price;
+      if (breakSize < minBreakSize) continue;
+
+      let hadCloseAbove = false;
+      for (let j = breakHigh.index - 2; j <= Math.min(breakHigh.index + 2, candles.length - 1); j++) {
+        if (j >= 0 && j < candles.length && candles[j].close > prevHigh.price) {
+          hadCloseAbove = true;
+          break;
         }
       }
-      if (i >= 2 && highs[i].price > highs[i - 1].price && highs[i - 1].price > highs[i - 2].price) {
-        break;
+      if (!hadCloseAbove) continue;
+
+      if (nextHigh.price < prevHigh.price) {
+        failures++;
       }
     }
   }
 
   return failures;
+}
+
+/** Simple ATR calculation for significance filtering */
+function calcMinATR(candles: Candle[], period: number = 14): number {
+  if (candles.length < period + 1) return 0;
+  let sum = 0;
+  for (let i = candles.length - period; i < candles.length; i++) {
+    const tr = Math.max(
+      candles[i].high - candles[i].low,
+      Math.abs(candles[i].high - candles[i - 1].close),
+      Math.abs(candles[i].low - candles[i - 1].close)
+    );
+    sum += tr;
+  }
+  return sum / period;
 }
 
 export function detectContinuationPatterns(candles: Candle[], swings: SwingPoint[]): SmcEvent[] {
